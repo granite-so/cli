@@ -8,7 +8,7 @@ from typing import Any
 CONFIG_DIR = Path.home() / ".novps"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-DEFAULT_API_URL = "https://api.novps.io"
+DEFAULT_API_URL = "https://api.granite.so"
 
 
 def load_config() -> dict[str, Any]:
@@ -38,7 +38,7 @@ def get_api_url() -> str:
     return os.environ.get("NOVPS_API_URL") or load_config().get("api_url") or DEFAULT_API_URL
 
 
-DEFAULT_WS_URL = "wss://websocket.novps.io"
+DEFAULT_WS_URL = "wss://websocket.granite.so"
 
 
 def get_ws_url() -> str:
