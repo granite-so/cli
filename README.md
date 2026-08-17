@@ -156,7 +156,7 @@ novps registry list               # List registry namespaces
 Buckets and keys are referenced by their **unique identifier** (`internal_domain` for buckets, `internal_name` for keys), not the display name — names are not guaranteed unique within a project. Run the corresponding `list` command to see identifiers in the first column.
 
 ```bash
-novps storage list                                    # List S3 buckets (first column = identifier)
+novps storage list                                    # List S3 buckets (first column = identifier, plus origin/CDN endpoints)
 novps storage create my-bucket [--region eu]          # Display name; identifier is returned in output
 novps storage delete <bucket> [--force]               # Delete a bucket (prompts to type DELETE)
 novps storage set-access <bucket> private|public-read|public-full

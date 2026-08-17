@@ -23,6 +23,8 @@ app.add_typer(keys_app, name="keys")
 BUCKET_COLUMNS = [
     ("internal_domain", "Bucket"),
     ("name", "Name"),
+    ("origin_url", "Origin"),
+    ("cdn_url", "CDN"),
     ("region", "Region"),
     ("access_level", "Access Level"),
     ("size", "Size"),
@@ -98,10 +100,23 @@ def _parse_bucket_perm(value: str) -> tuple[str, str]:
     return internal_domain, level
 
 
+def _format_endpoint(url: Any) -> str:
+    """Table view of an endpoint: the host only, like the web console shows."""
+    if not url:
+        return "-"
+    text = str(url)
+    for scheme in ("https://", "http://"):
+        if text.startswith(scheme):
+            return text[len(scheme):]
+    return text
+
+
 def _format_bucket_row(bucket: dict[str, Any]) -> dict[str, Any]:
     return {
         **bucket,
         "size": _format_size(bucket.get("size")),
+        "origin_url": _format_endpoint(bucket.get("origin_url")),
+        "cdn_url": _format_endpoint(bucket.get("cdn_url")),
     }
 
 
@@ -156,6 +171,10 @@ def create_bucket(
         f"Bucket created: name='{data.get('name')}' "
         f"identifier='{data.get('internal_domain')}' region={data.get('region')}"
     )
+    if data.get("origin_url"):
+        typer.echo(f"Origin URL: {data['origin_url']}")
+    if data.get("cdn_url"):
+        typer.echo(f"CDN URL: {data['cdn_url']}")
 
 
 @app.command("delete")
