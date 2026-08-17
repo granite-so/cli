@@ -74,6 +74,17 @@ novps resources logs <resource_id>          # View resource logs
 novps resources logs <resource_id> -f       # Follow log output
 novps resources logs <resource_id> -n 500   # Last 500 lines
 novps resources logs <resource_id> --since 30m --search "error"
+novps resources set-image <resource_id> --image registry.example.com/team/api --tag 1.4.2
+```
+
+Images hosted in a private registry need credentials. Pass them as `USER:PASSWORD` (or the UUID of
+credentials already stored for that image); an empty string removes them. Read the value from the
+environment so the password stays out of shell history:
+
+```bash
+novps resources set-image <resource_id> --docker-credentials "$DOCKER_USER:$DOCKER_TOKEN"
+novps resources update <resource_id> --tag 1.4.2 --docker-credentials "$DOCKER_USER:$DOCKER_TOKEN"
+novps resources set-image <resource_id> --docker-credentials ""   # Remove stored credentials
 ```
 
 ### Secrets

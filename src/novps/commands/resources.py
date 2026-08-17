@@ -407,6 +407,29 @@ def _parse_env_pair(value: str) -> tuple[str, str]:
     return key, val
 
 
+_UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+DOCKER_CREDENTIALS_HELP = (
+    "Private registry credentials as USER:PASSWORD (or the UUID of credentials already stored"
+    " for this image). Pass an empty string to remove them. Read the value from the environment"
+    " to keep it out of shell history, e.g. --docker-credentials \"$DOCKER_USER:$DOCKER_TOKEN\"."
+)
+
+
+def _validate_docker_credentials(value: str) -> str:
+    """Validate a --docker-credentials value. '' is valid and clears the credentials."""
+    if value == "":
+        return value
+    if _UUID_PATTERN.match(value):
+        return value
+    user, sep, password = value.partition(":")
+    if not sep or not user or not password:
+        raise typer.BadParameter(
+            "Expected USER:PASSWORD or a credentials UUID (empty string clears the credentials)"
+        )
+    return value
+
+
 def _confirm_delete(message: str, *, force: bool) -> None:
     if force:
         return
@@ -422,6 +445,9 @@ def update_resource(
     resource_id: str = typer.Argument(help="Resource ID."),
     image: str | None = typer.Option(None, "--image", help="New image name."),
     tag: str | None = typer.Option(None, "--tag", help="New image tag."),
+    docker_credentials: str | None = typer.Option(
+        None, "--docker-credentials", help=DOCKER_CREDENTIALS_HELP
+    ),
     replicas: str | None = typer.Option(None, "--replicas", help="Replica size:count, e.g. sm:2."),
     command: str | None = typer.Option(None, "--command", help="Override command."),
     port: str | None = typer.Option(None, "--port", help="HTTP port."),
@@ -437,6 +463,8 @@ def update_resource(
         payload["image_name"] = image
     if tag is not None:
         payload["image_tag"] = tag
+    if docker_credentials is not None:
+        payload["image_credentials"] = _validate_docker_credentials(docker_credentials)
     if replicas is not None:
         size, count = _parse_replicas(replicas)
         payload["replicas_type"] = size
@@ -484,20 +512,28 @@ def set_image(
     resource_id: str = typer.Argument(help="Resource ID."),
     image: str | None = typer.Option(None, "--image", help="New image name."),
     tag: str | None = typer.Option(None, "--tag", help="New image tag."),
+    docker_credentials: str | None = typer.Option(
+        None, "--docker-credentials", help=DOCKER_CREDENTIALS_HELP
+    ),
     project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Update the docker image and/or tag (shortcut for update)."""
+    """Update the docker image, tag and/or registry credentials (shortcut for update)."""
     payload: dict = {}
     if image is not None:
         payload["image_name"] = image
     if tag is not None:
         payload["image_tag"] = tag
+    if docker_credentials is not None:
+        payload["image_credentials"] = _validate_docker_credentials(docker_credentials)
     if not payload:
-        typer.echo("Provide --image and/or --tag.", err=True)
+        typer.echo("Provide --image, --tag and/or --docker-credentials.", err=True)
         raise typer.Exit(code=1)
     client = get_client(project)
     client.patch(f"/resources/{resource_id}", data=payload)
-    typer.echo(f"Resource {resource_id}: image updated.")
+    if set(payload) == {"image_credentials"}:
+        typer.echo(f"Resource {resource_id}: docker credentials updated.")
+    else:
+        typer.echo(f"Resource {resource_id}: image updated.")
 
 
 @app.command("set-env")
