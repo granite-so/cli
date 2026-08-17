@@ -16,6 +16,62 @@ TERMINAL_STATUSES = {"created", "error"}
 BACKUP_TERMINAL_STATUSES = {"completed", "error"}
 REPLICA_TERMINAL_STATUSES = {"available"}
 
+# Raw API statuses → (human label, Rich colour). The vocabularies come from the
+# backend workers (backend-go internal/workers/database_*.go) and the entry
+# formatters in internal/handlers/publicapi. Raw values are kept for control
+# flow and --json output; only the display side is mapped.
+DATABASE_STATUS_LABELS = {
+    "pending": ("Pending", "yellow"),
+    "creating": ("Creating", "yellow"),
+    "checking": ("Checking", "yellow"),
+    "updating": ("Updating", "yellow"),
+    "created": ("Ready", "green"),
+    "error": ("Error", "red"),
+}
+
+REPLICA_STATUS_LABELS = {
+    "scheduled": ("Scheduled", "yellow"),
+    "available": ("Ready", "green"),
+    "error": ("Error", "red"),
+}
+
+BACKUP_STATUS_LABELS = {
+    "scheduled": ("Scheduled", "yellow"),
+    "creating": ("Creating", "yellow"),
+    "completed": ("Completed", "green"),
+    "error": ("Error", "red"),
+}
+
+POOL_STATUS_LABELS = {
+    "scheduled": ("Scheduled", "yellow"),
+    "creating": ("Creating", "yellow"),
+    "updating": ("Updating", "yellow"),
+    "completed": ("Ready", "green"),
+    "error": ("Error", "red"),
+}
+
+
+def _status_label(status: Any, labels: dict[str, tuple[str, str]]) -> str:
+    """Human-readable status label; unknown statuses pass through unchanged."""
+    raw = str(status or "").strip()
+    if not raw:
+        return ""
+    label, _ = labels.get(raw, (raw, ""))
+    return label
+
+
+def _status_text(status: Any, labels: dict[str, tuple[str, str]]) -> str:
+    """Status label with Rich colour markup (for tables and progress output)."""
+    raw = str(status or "").strip()
+    if not raw:
+        return ""
+    label, color = labels.get(raw, (raw, ""))
+    return f"[{color}]{label}[/{color}]" if color else label
+
+
+def _status_formatter(labels: dict[str, tuple[str, str]]) -> dict[str, Any]:
+    return {"status": lambda value: _status_text(value, labels)}
+
 app = typer.Typer(no_args_is_help=True)
 replica_app = typer.Typer(no_args_is_help=True, help="Manage read-only replicas (postgres only).")
 backups_app = typer.Typer(no_args_is_help=True, help="Manage postgres/mysql backups.")
@@ -96,13 +152,15 @@ def _wait_for_replica(client, database_id: str) -> dict[str, Any]:
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}[/bold]"),
-        TextColumn("status: [cyan]{task.fields[status]}[/cyan]"),
+        TextColumn("status: {task.fields[status]}"),
         TimeElapsedColumn(),
         console=console,
         transient=True,
     )
     with progress:
-        task_id = progress.add_task("Provisioning replica", status="scheduled")
+        task_id = progress.add_task(
+            "Provisioning replica", status=_status_text("scheduled", REPLICA_STATUS_LABELS)
+        )
         while True:
             try:
                 resp = client.get(f"/databases/{database_id}")
@@ -111,7 +169,7 @@ def _wait_for_replica(client, database_id: str) -> dict[str, Any]:
                 raise
             replica = (resp.get("data") or {}).get("readonly_replica") or {}
             status = replica.get("status") or "unknown"
-            progress.update(task_id, status=status)
+            progress.update(task_id, status=_status_text(status, REPLICA_STATUS_LABELS))
 
             if status in REPLICA_TERMINAL_STATUSES:
                 return replica
@@ -119,7 +177,7 @@ def _wait_for_replica(client, database_id: str) -> dict[str, Any]:
                 progress.stop()
                 typer.echo(
                     f"Timed out after {WAIT_TIMEOUT_SECONDS}s waiting for replica. "
-                    f"Last status: {status}.",
+                    f"Last status: {_status_label(status, REPLICA_STATUS_LABELS)}.",
                     err=True,
                 )
                 raise typer.Exit(code=1)
@@ -132,13 +190,15 @@ def _wait_for_backup(client, database_id: str, backup_id: str) -> dict[str, Any]
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}[/bold]"),
-        TextColumn("status: [cyan]{task.fields[status]}[/cyan]"),
+        TextColumn("status: {task.fields[status]}"),
         TimeElapsedColumn(),
         console=console,
         transient=True,
     )
     with progress:
-        task_id = progress.add_task("Creating backup", status="scheduled")
+        task_id = progress.add_task(
+            "Creating backup", status=_status_text("scheduled", BACKUP_STATUS_LABELS)
+        )
         while True:
             try:
                 resp = client.get(f"/databases/{database_id}/backups")
@@ -148,7 +208,7 @@ def _wait_for_backup(client, database_id: str, backup_id: str) -> dict[str, Any]
             backups = resp.get("data") or []
             entry = next((b for b in backups if str(b.get("id")) == str(backup_id)), None)
             status = (entry or {}).get("status") or "unknown"
-            progress.update(task_id, status=status)
+            progress.update(task_id, status=_status_text(status, BACKUP_STATUS_LABELS))
 
             if status in BACKUP_TERMINAL_STATUSES:
                 return entry or {}
@@ -156,7 +216,7 @@ def _wait_for_backup(client, database_id: str, backup_id: str) -> dict[str, Any]
                 progress.stop()
                 typer.echo(
                     f"Timed out after {WAIT_TIMEOUT_SECONDS}s waiting for backup. "
-                    f"Last status: {status}.",
+                    f"Last status: {_status_label(status, BACKUP_STATUS_LABELS)}.",
                     err=True,
                 )
                 raise typer.Exit(code=1)
@@ -190,13 +250,15 @@ def _wait_for_database(client, database_id: str) -> str:
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}[/bold]"),
-        TextColumn("status: [cyan]{task.fields[status]}[/cyan]"),
+        TextColumn("status: {task.fields[status]}"),
         TimeElapsedColumn(),
         console=console,
         transient=True,
     )
     with progress:
-        task_id = progress.add_task("Provisioning database", status="pending")
+        task_id = progress.add_task(
+            "Provisioning database", status=_status_text("pending", DATABASE_STATUS_LABELS)
+        )
         while True:
             try:
                 resp = client.get(f"/databases/{database_id}")
@@ -204,7 +266,7 @@ def _wait_for_database(client, database_id: str) -> str:
                 progress.stop()
                 raise
             status = (resp.get("data") or {}).get("status") or "unknown"
-            progress.update(task_id, status=status)
+            progress.update(task_id, status=_status_text(status, DATABASE_STATUS_LABELS))
 
             if status in TERMINAL_STATUSES:
                 return status
@@ -212,7 +274,7 @@ def _wait_for_database(client, database_id: str) -> str:
                 progress.stop()
                 typer.echo(
                     f"Timed out after {WAIT_TIMEOUT_SECONDS}s waiting for database to become ready. "
-                    f"Last status: {status}.",
+                    f"Last status: {_status_label(status, DATABASE_STATUS_LABELS)}.",
                     err=True,
                 )
                 raise typer.Exit(code=1)
@@ -241,7 +303,13 @@ def list_databases(
     client = get_client(project)
     resp = client.get("/databases")
     data = resp.get("data", [])
-    output(data, DATABASE_COLUMNS, title="Databases", as_json=json)
+    output(
+        data,
+        DATABASE_COLUMNS,
+        title="Databases",
+        as_json=json,
+        formatters=_status_formatter(DATABASE_STATUS_LABELS),
+    )
 
 
 def _print_get_table(data: dict[str, Any], show_password: bool) -> None:
@@ -255,7 +323,7 @@ def _print_get_table(data: dict[str, Any], show_password: bool) -> None:
 
     table.add_row("ID", str(data.get("id", "")))
     table.add_row("Name", data.get("name", ""))
-    table.add_row("Status", data.get("status", ""))
+    table.add_row("Status", _status_text(data.get("status"), DATABASE_STATUS_LABELS))
 
     engine_display = f"{engine} {version}" if version else engine
     table.add_row("Engine", engine_display)
@@ -286,7 +354,7 @@ def _print_get_table(data: dict[str, Any], show_password: bool) -> None:
         replica_table.add_row("ID", str(replica.get("id", "")))
         replica_table.add_row("Name", replica.get("name", ""))
         replica_table.add_row("Size", replica.get("size", ""))
-        replica_table.add_row("Status", replica.get("status", ""))
+        replica_table.add_row("Status", _status_text(replica.get("status"), REPLICA_STATUS_LABELS))
 
         replica_node_config = replica.get("node_config") or {}
         if replica_node_config:
@@ -398,7 +466,7 @@ def create_database(
     typer.echo(f"Database created: {name} ({database_id})")
 
     if not wait:
-        typer.echo(f"Status: {data.get('status')}")
+        typer.echo(f"Status: {_status_label(data.get('status'), DATABASE_STATUS_LABELS)}")
         return
 
     if not database_id:
@@ -412,7 +480,11 @@ def create_database(
         raise typer.Exit(code=130)
 
     if final_status != "created":
-        typer.echo(f"Database failed to become ready (status: {final_status}).", err=True)
+        typer.echo(
+            f"Database failed to become ready (status: "
+            f"{_status_label(final_status, DATABASE_STATUS_LABELS)}).",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     typer.echo("Database is ready.")
@@ -467,7 +539,10 @@ def resize_database(
     if json:
         print_json(data)
         return
-    typer.echo(f"Resize scheduled. Current status: {data.get('status', 'unknown')}")
+    typer.echo(
+        "Resize scheduled. Current status: "
+        f"{_status_label(data.get('status') or 'unknown', DATABASE_STATUS_LABELS)}"
+    )
 
 
 @app.command("allow-apps")
@@ -523,7 +598,10 @@ def replica_create(
         print_json(data)
         return
 
-    typer.echo(f"Replica created: id={data.get('id')} size={data.get('size')} status={data.get('status')}")
+    typer.echo(
+        f"Replica created: id={data.get('id')} size={data.get('size')} "
+        f"status={_status_label(data.get('status'), REPLICA_STATUS_LABELS)}"
+    )
 
     if not wait:
         return
@@ -535,7 +613,11 @@ def replica_create(
         raise typer.Exit(code=130)
 
     if replica.get("status") != "available":
-        typer.echo(f"Replica failed to become ready (status: {replica.get('status')}).", err=True)
+        typer.echo(
+            f"Replica failed to become ready (status: "
+            f"{_status_label(replica.get('status'), REPLICA_STATUS_LABELS)}).",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     typer.echo("Replica is ready.")
@@ -595,7 +677,13 @@ def backups_list(
     client = get_client(project)
     resp = client.get(f"/databases/{database_id}/backups")
     data = resp.get("data", [])
-    output(data, BACKUP_COLUMNS, title="Backups", as_json=json)
+    output(
+        data,
+        BACKUP_COLUMNS,
+        title="Backups",
+        as_json=json,
+        formatters=_status_formatter(BACKUP_STATUS_LABELS),
+    )
 
 
 @backups_app.command("create")
@@ -617,7 +705,10 @@ def backups_create(
         print_json(data)
         return
 
-    typer.echo(f"Backup scheduled: id={backup_id} name={data.get('name')} status={data.get('status')}")
+    typer.echo(
+        f"Backup scheduled: id={backup_id} name={data.get('name')} "
+        f"status={_status_label(data.get('status'), BACKUP_STATUS_LABELS)}"
+    )
 
     if not wait:
         return
@@ -634,7 +725,10 @@ def backups_create(
     status = final.get("status")
     if status != "completed":
         reason = final.get("reason") or "unknown reason"
-        typer.echo(f"Backup failed (status: {status}): {reason}", err=True)
+        typer.echo(
+            f"Backup failed (status: {_status_label(status, BACKUP_STATUS_LABELS)}): {reason}",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     table = Table(title="Backup")
@@ -676,7 +770,13 @@ def pool_list(
     client = get_client(project)
     resp = client.get(f"/databases/{database_id}/connection-pools")
     data = resp.get("data", [])
-    output(data, POOL_COLUMNS, title="Connection Pools", as_json=json)
+    output(
+        data,
+        POOL_COLUMNS,
+        title="Connection Pools",
+        as_json=json,
+        formatters=_status_formatter(POOL_STATUS_LABELS),
+    )
 
 
 @pool_app.command("create")
@@ -708,7 +808,7 @@ def pool_create(
     typer.echo(
         f"Pool created: id={data.get('id')} name={data.get('name')} "
         f"target={data.get('target')} mode={data.get('mode')} size={data.get('size')} "
-        f"status={data.get('status')}"
+        f"status={_status_label(data.get('status'), POOL_STATUS_LABELS)}"
     )
 
 
@@ -743,7 +843,7 @@ def pool_update(
         return
     typer.echo(
         f"Pool updated: id={data.get('id')} mode={data.get('mode')} "
-        f"size={data.get('size')} status={data.get('status')}"
+        f"size={data.get('size')} status={_status_label(data.get('status'), POOL_STATUS_LABELS)}"
     )
 
 
