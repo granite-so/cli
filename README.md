@@ -1,4 +1,4 @@
-# NoVPS CLI
+# Granite CLI
 
 Command-line tool for managing [granite.so](https://granite.so) infrastructure.
 
