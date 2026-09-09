@@ -1,11 +1,11 @@
 # NoVPS CLI
 
-Command-line tool for managing [novps.io](https://novps.io) infrastructure.
+Command-line tool for managing [granite.so](https://granite.so) infrastructure.
 
 ## Installation
 
 ```bash
-curl https://cli.novps.io | sh
+curl https://cli.granite.so | sh
 ```
 
 This will download the appropriate binary for your platform and install it to `~/.local/bin` or `/usr/local/bin`.
@@ -13,7 +13,7 @@ This will download the appropriate binary for your platform and install it to `~
 You can specify a custom install directory:
 
 ```bash
-NOVPS_INSTALL_DIR=~/bin curl https://cli.novps.io | sh
+NOVPS_INSTALL_DIR=~/bin curl https://cli.granite.so | sh
 ```
 
 ### From source
@@ -32,7 +32,7 @@ pip install -e .
 
 ## Authentication
 
-Create a Personal Access Token in the NoVPS web dashboard, then:
+Create a Personal Access Token in the [Granite web dashboard](https://dashboard.granite.so), then:
 
 ```bash
 novps auth login
@@ -222,8 +222,8 @@ novps secrets list <app_id> --json
 | Setting | Source | Default |
 |---------|--------|---------|
 | Token | `~/.novps/config.json` | — |
-| API URL | `NOVPS_API_URL` env var | `https://api.novps.app` |
-| WebSocket URL | `NOVPS_WS_URL` env var | `wss://api.novps.app` |
+| API URL | `NOVPS_API_URL` env var | `https://api.granite.so` |
+| WebSocket URL | `NOVPS_WS_URL` env var | `wss://api.granite.so` |
 
 ## Supported platforms
 
