@@ -437,9 +437,9 @@ Run the corresponding `list` command to see identifiers in the first column.
 
 ```bash
 novps storage list                                    # List S3 buckets (+ origin/CDN endpoints)
-novps storage create my-bucket [--region eu]          # Display name; identifier is in the output
-novps storage delete <bucket> [--force]               # Prompts to type DELETE
-novps storage set-access <bucket> private|public-read
+novps storage create my-bucket [--region europe|usa|asia]   # Display name; identifier is in the output
+novps storage delete <bucket> [--force]               # Prompts to type DELETE; contents erased after 14 days
+novps storage set-access <bucket> private|public-read # public-read: files served via the CDN URL
 ```
 
 #### Files
@@ -454,6 +454,7 @@ novps storage files download <bucket> path/data.bin [-o ./local.bin] [--duration
 
 novps storage files rename <bucket> old/key.txt new/key.txt
 novps storage files delete <bucket> key1 key2 ... [--force]
+novps storage files url <bucket> images/logo.png      # Public CDN URL of a file (public-read buckets)
 ```
 
 #### Access keys
@@ -461,11 +462,21 @@ novps storage files delete <bucket> key1 key2 ... [--force]
 ```bash
 novps storage keys list
 novps storage keys create prod-key --bucket <bucket-a>:rw --bucket <bucket-b>:ro   # Secret shown once
-novps storage keys update <key> [--name new-name] [--bucket <bucket-a>:rw]         # --bucket replaces permissions
+novps storage keys update <key> [--name new-name] [--bucket <bucket-a>:rw]         # --bucket replaces permissions*
 novps storage keys update <key> --replace-permissions                              # Clear all permissions
-novps storage keys regenerate <key> [--force]                                      # Old secret stops working
+novps storage keys regenerate <key> [--force]                                      # Old credentials stop working*
 novps storage keys delete <key> [--force]
 ```
+
+\* Buckets in the `europe`, `usa` and `asia` regions: all buckets of a key must be in the same
+region and share one permission level (all `ro` or all `rw`), and a key cannot be left without
+buckets. Changing the permissions or regenerating such a key issues a new Access Key **and**
+Secret Key — both are printed once, and the old pair stops working immediately. Buckets in the
+legacy `eu` region keep per-bucket levels, and regenerating only changes the secret.
+
+A `public-read` bucket serves its files at the CDN URL (`novps storage files url <bucket> <key>`).
+In the `europe`, `usa` and `asia` regions that is the only public address: the origin URL always
+requires an access key.
 
 ### Port forwarding
 

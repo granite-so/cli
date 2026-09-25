@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import typer
@@ -49,6 +50,15 @@ KEY_COLUMNS = [
 
 ACCESS_LEVELS = ("private", "public-read")
 PERMISSION_LEVELS = ("ro", "rw")
+REGIONS = ("europe", "usa", "asia")
+
+# Sent when --region is omitted. The platform maps it to its default region
+# (Europe), and it is the only value older API versions accept.
+DEFAULT_REGION = "eu"
+
+# In the Europe / USA / Asia regions a public bucket is served only through its
+# CDN URL; the origin URL always requires an access key.
+CDN_ONLY_ENGINE = "idrivee2"
 
 
 def _format_size(size: Any) -> str:
@@ -156,13 +166,19 @@ def list_buckets(
 def create_bucket(
         name: str = typer.Argument(help="Display name (3-40 chars, alphanumeric and dashes). A unique"
                                          " identifier suffix is appended automatically."),
-        region: str = typer.Option("eu", "--region", help="Region."),
+        region: str | None = typer.Option(
+            None, "--region",
+            help=f"Region: {', '.join(REGIONS)}. Omit to use the default region (Europe).",
+        ),
         json: bool = typer.Option(False, "--json", help="Output as JSON."),
         project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Create a new S3 bucket. The response's 'internal_domain' is the identifier to use."""
+    """Create a new S3 bucket. The response's 'internal_domain' is the identifier to use.
+
+    The region cannot be changed later. Creating the first bucket of a project in a region can take up to a minute.
+    """
     client = get_client(project)
-    resp = client.post("/storage", data={"name": name, "region": region})
+    resp = client.post("/storage", data={"name": name, "region": region or DEFAULT_REGION})
     data = resp.get("data", {})
     if json:
         print_json(data)
@@ -183,11 +199,14 @@ def delete_bucket(
         force: bool = typer.Option(False, "--force", help="Skip the typed confirmation."),
         project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Delete an S3 bucket (all objects are permanently removed)."""
-    _confirm_delete(f"This will permanently delete bucket '{bucket}' and all its contents.", force=force)
+    """Delete an S3 bucket. Its contents are kept for 14 days, then permanently erased."""
+    _confirm_delete(
+        f"This will delete bucket '{bucket}'. Its contents are kept for 14 days and then permanently erased.",
+        force=force,
+    )
     client = get_client(project)
     client.delete(f"/storage/{bucket}")
-    typer.echo(f"Bucket '{bucket}' deleted.")
+    typer.echo(f"Bucket '{bucket}' deleted. Its contents will be permanently erased in 14 days.")
 
 
 @app.command("set-access")
@@ -197,7 +216,10 @@ def set_access(
         json: bool = typer.Option(False, "--json", help="Output as JSON."),
         project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Change a bucket's access policy."""
+    """Change a bucket's access policy.
+
+    public-read makes files downloadable by anyone through the bucket's CDN URL. In the europe, usa and asia regions that is the only public address: the origin URL still requires an access key.
+    """
     if access_level not in ACCESS_LEVELS:
         typer.echo(f"Error: access_level must be one of: {', '.join(ACCESS_LEVELS)}", err=True)
         raise typer.Exit(code=1)
@@ -208,6 +230,11 @@ def set_access(
         print_json(data)
         return
     typer.echo(f"Bucket '{data.get('internal_domain')}' access level set to '{data.get('access_level')}'.")
+    if data.get("access_level") == "public-read" and data.get("cdn_url"):
+        typer.echo(f"Public files: {data['cdn_url']}/<key>")
+        if data.get("engine") == CDN_ONLY_ENGINE:
+            typer.echo("Served only through the CDN URL (ready within a few minutes); "
+                       "the origin URL still requires an access key.")
 
 
 # ── files ─────────────────────────────────────────────────────────────────
@@ -395,6 +422,30 @@ def rename_file(
     typer.echo(f"Renamed {bucket}/{key} -> {bucket}/{new_key}")
 
 
+@files_app.command("url")
+def file_url(
+        bucket: str = typer.Argument(help="Bucket identifier (internal_domain)."),
+        key: str = typer.Argument(help="Object key, e.g. images/logo.png."),
+        project: str = typer.Option("default", "--project", "-p", help="Project alias."),
+) -> None:
+    """Print the public CDN URL of a file in a public-read bucket."""
+    client = get_client(project)
+    resp = client.get("/storage")
+    found = next((b for b in resp.get("data", []) if b.get("internal_domain") == bucket), None)
+    if found is None:
+        typer.echo(f"Error: bucket '{bucket}' not found.", err=True)
+        raise typer.Exit(code=1)
+    if found.get("access_level") == "private" or not found.get("cdn_url"):
+        typer.echo(
+            f"Error: bucket '{bucket}' is private, its files have no public URL. "
+            f"Run 'novps storage set-access {bucket} public-read' first, or use "
+            f"'novps storage files download --duration' for a temporary link.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"{found['cdn_url'].rstrip('/')}/{quote(key.lstrip('/'), safe='/')}")
+
+
 @files_app.command("delete")
 def delete_files(
         bucket: str = typer.Argument(help="Bucket identifier (internal_domain)."),
@@ -476,7 +527,10 @@ def create_key(
         json: bool = typer.Option(False, "--json", help="Output as JSON."),
         project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Create a new S3 access key. The secret is shown once on success."""
+    """Create a new S3 access key. The secret is shown once on success.
+
+    In the europe, usa and asia regions all buckets of a key must be in the same region and have the same permission level (all ro or all rw); use separate keys otherwise.
+    """
     if not bucket:
         typer.echo("Error: at least one --bucket is required.", err=True)
         raise typer.Exit(code=1)
@@ -512,7 +566,10 @@ def update_key(
         json: bool = typer.Option(False, "--json", help="Output as JSON."),
         project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Update a key's name and/or bucket permissions."""
+    """Update a key's name and/or bucket permissions.
+
+    For keys in the europe, usa and asia regions a permission change re-issues the key: a new Access Key and Secret Key are printed once and the old pair stops working.
+    """
     update_perms = replace_permissions or bool(bucket)
     if new_name is None and not update_perms:
         typer.echo(
@@ -535,7 +592,10 @@ def update_key(
     if json:
         print_json(data)
         return
-    _print_key_table(data, show_secret=False)
+    if data.get("key_secret"):
+        typer.echo("The key was re-issued: update your applications with the new Access Key and "
+                   "Secret Key below. The old pair no longer works.")
+    _print_key_table(data, show_secret=True)
 
 
 @keys_app.command("regenerate")
@@ -545,9 +605,12 @@ def regenerate_key(
         json: bool = typer.Option(False, "--json", help="Output as JSON."),
         project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Regenerate the secret for a key. The old secret stops working immediately."""
+    """Regenerate a key. The old credentials stop working immediately.
+
+    For keys in the europe, usa and asia regions the Access Key changes as well as the secret.
+    """
     if not force and not typer.confirm(
-            f"Regenerate secret for key '{key}'? The old secret stops working immediately.",
+            f"Regenerate key '{key}'? The old credentials stop working immediately.",
             default=False,
     ):
         typer.echo("Aborted.", err=True)
