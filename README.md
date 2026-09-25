@@ -439,7 +439,7 @@ Run the corresponding `list` command to see identifiers in the first column.
 novps storage list                                    # List S3 buckets (+ origin/CDN endpoints)
 novps storage create my-bucket [--region eu]          # Display name; identifier is in the output
 novps storage delete <bucket> [--force]               # Prompts to type DELETE
-novps storage set-access <bucket> private|public-read|public-full
+novps storage set-access <bucket> private|public-read
 ```
 
 #### Files

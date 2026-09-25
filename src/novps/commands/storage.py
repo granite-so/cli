@@ -47,7 +47,7 @@ KEY_COLUMNS = [
     ("created_at", "Created At"),
 ]
 
-ACCESS_LEVELS = ("private", "public-read", "public-full")
+ACCESS_LEVELS = ("private", "public-read")
 PERMISSION_LEVELS = ("ro", "rw")
 
 
