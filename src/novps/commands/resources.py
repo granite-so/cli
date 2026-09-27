@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import re
+import secrets
 import select
 import signal
 import ssl
@@ -340,12 +342,7 @@ async def _ws_to_stdout(ws: websockets.ClientConnection) -> None:
         pass
 
 
-@app.command("connect")
-def resource_connect(
-    resource_id: str = typer.Argument(help="Resource ID to connect to."),
-    project: str = typer.Option("default", "--project", "-p", help="Project alias."),
-) -> None:
-    """Connect to a resource pod for interactive shell access."""
+def _get_exec_websocket_path(resource_id: str, project: str) -> str:
     client = get_client(project)
 
     resp = client.post("/exec/ticket", data={"resource_id": resource_id})
@@ -358,6 +355,16 @@ def resource_connect(
         typer.echo("Error: Failed to obtain exec ticket.", err=True)
         raise typer.Exit(code=1)
 
+    return websocket_path
+
+
+@app.command("connect")
+def resource_connect(
+    resource_id: str = typer.Argument(help="Resource ID to connect to."),
+    project: str = typer.Option("default", "--project", "-p", help="Project alias."),
+) -> None:
+    """Connect to a resource pod for interactive shell access."""
+    websocket_path = _get_exec_websocket_path(resource_id, project)
     ws_base = get_ws_url()
 
     typer.echo("Use Ctrl+] to disconnect.\n")
@@ -381,6 +388,152 @@ def resource_connect(
             asyncio.run(_async_connect(ws_base, websocket_path))
         except KeyboardInterrupt:
             pass
+
+
+# ── non-interactive exec ─────────────────────────────────────────────
+#
+# The exec WebSocket always runs /bin/sh on a TTY, so there is no separate
+# exit-code channel and everything we type is echoed back. To run a command
+# non-interactively we drive that shell like a script:
+#
+#   1. turn off echo and CR/LF translation, then print a READY marker;
+#   2. upload the command (and optional stdin) base64-encoded through
+#      heredocs, so no user bytes ever pass through the TTY line discipline;
+#   3. print a BEGIN marker, run the command, print an END marker carrying $?.
+#
+# Everything before BEGIN (prompts, echo) is discarded, everything between
+# BEGIN and END is streamed to stdout, and the END marker gives the exit code.
+# Markers are printed with printf '%s_%s' so their echoed source never matches.
+
+_EXEC_READY_TIMEOUT = 30  # seconds to wait for the pod shell to come up
+_EXEC_SEND_CHUNK = 64 * 1024
+_EXEC_LOST_EXIT_CODE = 255  # like ssh, when the session drops before the command finishes
+
+
+def _heredoc_upload(path: str, payload: bytes) -> str:
+    encoded = base64.encodebytes(payload).decode("ascii")
+    return f"base64 -d > {path} <<'__NOVPS_EOF__'\n{encoded}__NOVPS_EOF__\n"
+
+
+def _message_text(message: str | bytes) -> str:
+    if isinstance(message, bytes):
+        return message.decode("utf-8", errors="replace")
+    return message
+
+
+async def _async_exec(ws_base: str, websocket_path: str, command: str, stdin_data: bytes | None) -> int:
+    nonce = secrets.token_hex(8)
+    ready_re = re.compile(rf"__NOVPS_(READY|NOB64)_{nonce}\r?\n")
+    begin_re = re.compile(rf"__NOVPS_BEGIN_{nonce}\r?\n")
+    end_marker = f"\n__NOVPS_END_{nonce}:"
+
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    ws = await websockets.connect(ws_base + websocket_path, ssl=ssl_ctx, close_timeout=1)
+
+    try:
+        cols, rows = os.get_terminal_size() if sys.stdout.isatty() else (200, 50)
+        await ws.send(f"resize:{cols}:{rows}")
+        await ws.send(
+            "stty -echo -onlcr 2>/dev/null; PS1=''; PS2=''; "
+            "if command -v base64 >/dev/null 2>&1; "
+            f"then printf '%s_%s\\n' __NOVPS_READY {nonce}; "
+            f"else printf '%s_%s\\n' __NOVPS_NOB64 {nonce}; exit 1; fi\n"
+        )
+
+        # Phase 1: wait for the shell to acknowledge the setup line.
+        buf = ""
+        deadline = time.monotonic() + _EXEC_READY_TIMEOUT
+        while not (match := ready_re.search(buf)):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                typer.echo("Error: Timed out waiting for the pod shell.", err=True)
+                return _EXEC_LOST_EXIT_CODE
+            buf += _message_text(await asyncio.wait_for(ws.recv(), timeout=remaining))
+        if match.group(1) == "NOB64":
+            typer.echo("Error: The container has no base64 utility, which exec needs.", err=True)
+            return _EXEC_LOST_EXIT_CODE
+        buf = buf[match.end():]
+
+        # Phase 2: upload and run.
+        stdin_redirect = '"$d/in"' if stdin_data is not None else "/dev/null"
+        script = f"d=$(mktemp -d 2>/dev/null) || d=/tmp/.novps-exec-{nonce}; mkdir -p \"$d\"\n"
+        script += _heredoc_upload('"$d/cmd"', command.encode())
+        if stdin_data is not None:
+            script += _heredoc_upload('"$d/in"', stdin_data)
+        script += (
+            f"printf '%s_%s\\n' __NOVPS_BEGIN {nonce}; "
+            f"TERM=dumb NO_COLOR=1 sh \"$d/cmd\" < {stdin_redirect}; __novps_rc=$?; rm -rf \"$d\"; "
+            f"printf '\\n%s_%s:%d\\n' __NOVPS_END {nonce} \"$__novps_rc\"; exit \"$__novps_rc\"\n"
+        )
+        for i in range(0, len(script), _EXEC_SEND_CHUNK):
+            await ws.send(script[i:i + _EXEC_SEND_CHUNK])
+
+        # Phase 3: skip everything up to BEGIN, stream until END.
+        while not (match := begin_re.search(buf)):
+            buf += _message_text(await ws.recv())
+        buf = buf[match.end():]
+
+        while True:
+            idx = buf.find(end_marker)
+            if idx != -1:
+                out = buf[:idx]
+                # Without `stty -onlcr` the marker's leading newline arrives as \r\n.
+                if out.endswith("\r"):
+                    out = out[:-1]
+                sys.stdout.write(out)
+                sys.stdout.flush()
+                tail = buf[idx + len(end_marker):]
+                while "\n" not in tail:
+                    tail += _message_text(await ws.recv())
+                return int(tail.split("\n", 1)[0].strip())
+
+            # Hold back enough to catch a marker split across frames.
+            keep = len(end_marker)
+            if len(buf) > keep:
+                sys.stdout.write(buf[:-keep])
+                sys.stdout.flush()
+                buf = buf[-keep:]
+            buf += _message_text(await ws.recv())
+    except websockets.exceptions.ConnectionClosed:
+        typer.echo("Error: Connection closed before the command finished.", err=True)
+        return _EXEC_LOST_EXIT_CODE
+    finally:
+        try:
+            await asyncio.wait_for(ws.close(), timeout=1)
+        except Exception:
+            pass
+
+
+@app.command("exec")
+def resource_exec(
+    resource_id: str = typer.Argument(help="Resource ID to run the command in."),
+    command: list[str] | None = typer.Argument(
+        None, help="Command to run with /bin/sh. Without it, a script is read from stdin.",
+    ),
+    stdin: bool = typer.Option(False, "--stdin", "-i", help="Pass local stdin to the command."),
+    project: str = typer.Option("default", "--project", "-p", help="Project alias."),
+) -> None:
+    """Run a command in a resource pod non-interactively and exit with its exit code."""
+    stdin_data: bytes | None = None
+    if command:
+        script = " ".join(command)
+        if stdin:
+            if sys.stdin.isatty():
+                typer.echo("Error: --stdin needs input piped in.", err=True)
+                raise typer.Exit(code=1)
+            stdin_data = sys.stdin.buffer.read()
+    else:
+        if sys.stdin.isatty():
+            typer.echo("Error: Pass a command, or pipe a script in on stdin.", err=True)
+            raise typer.Exit(code=1)
+        script = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+
+    websocket_path = _get_exec_websocket_path(resource_id, project)
+    try:
+        exit_code = asyncio.run(_async_exec(get_ws_url(), websocket_path, script, stdin_data))
+    except KeyboardInterrupt:
+        exit_code = 130
+    raise typer.Exit(code=exit_code)
 
 
 def _parse_replicas(value: str) -> tuple[str, int]:

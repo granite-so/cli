@@ -319,6 +319,9 @@ novps resources logs <resource_id> -f            # Follow log output
 novps resources logs <resource_id> -n 500        # Last 500 lines
 novps resources logs <resource_id> --since 30m --search "error"
 novps resources connect <resource_id>            # Interactive shell in the running pod
+novps resources exec <resource_id> -- ls -la /app   # Run one command, exit with its exit code
+novps resources exec <resource_id> < script.sh   # Run a local script in the pod
+cat dump.sql | novps resources exec <resource_id> -i -- 'psql "$DATABASE_URL"'   # Pipe stdin to the command
 
 novps resources deploy <resource_id>             # Trigger a manual deployment
 novps resources scale <resource_id> -r sm:2      # Replica size:count
@@ -506,6 +509,10 @@ an AI coding agent:
   `success` — so a deploy step fails the pipeline instead of passing silently.
 - **`--project` / `-p`** selects the stored token, so one machine can drive several projects.
 - **`novps auth login --token "$GRANITE_TOKEN"`** authenticates without a prompt.
+- **`resources exec` instead of `resources connect`** for running commands in a pod: no TTY needed,
+  output is only what the command prints, and the CLI exits with the command's exit code (255 if
+  the session drops). Arguments are joined with spaces and run by `/bin/sh`, like `ssh`, so pipes
+  and `&&` work inside a quoted argument. The container needs `base64`, and output is text only.
 - **Secrets stay out of the manifest**: `${VAR}` substitution from `--env-file`, and registry
   credentials set through the CLI rather than the committed YAML.
 
