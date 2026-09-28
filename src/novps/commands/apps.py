@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json as jsonlib
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 import yaml
 
+from novps import events as ev
 from novps.client import get_client
+from novps.commands.resources import _parse_since
 from novps.manifest import ManifestError, load_manifest, resource_names
 from novps.output import console, output, print_json
 
@@ -297,3 +301,136 @@ def export_app(
         typer.echo(f"Exported to {output_file}", err=True)
     else:
         sys.stdout.write(yaml_text)
+
+
+# ── events ──────────────────────────────────────────────────────────────
+
+_EVENTS_POLL_INTERVAL = 5
+_EVENTS_MAX_LIMIT = 500
+# Events carry the time the problem started, which can be minutes before
+# the agent reports it (open/close delays), so --follow re-reads a window
+# behind its cursor and drops ids it has already printed.
+_EVENTS_FOLLOW_OVERLAP = timedelta(minutes=15)
+
+
+def _resolve_resource_id(client, app_id: str, value: str) -> str:
+    resources = client.get(f"/apps/{app_id}/resources").get("data", [])
+    for res in resources:
+        if value in (res.get("id"), res.get("name")):
+            return res["id"]
+    names = ", ".join(sorted(r.get("name", "") for r in resources)) or "none"
+    raise typer.BadParameter(f"No resource '{value}' in this app (resources: {names}).", param_hint="--resource")
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _fetch_events(
+    client,
+    app_id: str,
+    *,
+    event_type: str | None,
+    resource_id: str | None,
+    since: datetime | None,
+    limit: int,
+) -> list[dict]:
+    """Newest-first events, following pages until `limit` is reached."""
+    events: list[dict] = []
+    page = 1
+    while len(events) < limit:
+        params: dict[str, str | int] = {"page": page}
+        if event_type:
+            params["type"] = event_type
+        if resource_id:
+            params["resource_id"] = resource_id
+        if since:
+            params["since"] = _iso(since)
+        resp = client.get(f"/apps/{app_id}/events", params=params)
+        batch = resp.get("data") or []
+        events.extend(batch)
+        page_limit = resp.get("page_limit") or 25
+        if len(batch) < page_limit or page * page_limit >= (resp.get("count") or 0):
+            break
+        page += 1
+    return events[:limit]
+
+
+@app.command("events")
+def app_events(
+    app_id: str = typer.Argument(help="Application ID."),
+    event_type: str | None = typer.Option(
+        None, "--type", "-t", help="Only this event type, e.g. resource.down or deployment.failed."
+    ),
+    resource: str | None = typer.Option(None, "--resource", "-r", help="Only events of this resource (name or ID)."),
+    since: str | None = typer.Option(None, "--since", "-s", help="Only events newer than this (e.g. 30m, 6h, 7d)."),
+    limit: int = typer.Option(25, "--limit", "-n", min=1, max=_EVENTS_MAX_LIMIT, help="Number of events to show."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Keep printing new events as they happen."),
+    json: bool = typer.Option(False, "--json", help="Output as JSON (one object per line with --follow)."),
+    project: str = typer.Option("default", "--project", "-p", help="Project alias."),
+) -> None:
+    """Show health and deployment events of an application, oldest first.
+
+    Healthchecks failing and recovering, restarts, out-of-memory kills, crash loops,
+    image pull and configuration errors, cron runs and deployments. The same events
+    platform webhooks deliver; kept for 30 days.
+    """
+    client = get_client(project)
+    resource_id = _resolve_resource_id(client, app_id, resource) if resource else None
+    since_dt = datetime.now(timezone.utc) - timedelta(seconds=_parse_since(since)) if since else None
+
+    events = _fetch_events(
+        client, app_id, event_type=event_type, resource_id=resource_id, since=since_dt, limit=limit
+    )
+
+    if json and not follow:
+        print_json(events)
+        return
+
+    width = max((len(ev.resource_name(e)) for e in events), default=0)
+    width = max(width, 12) if follow else width
+
+    def emit(event: dict) -> None:
+        if json:
+            typer.echo(jsonlib.dumps(event))
+        else:
+            console.print(ev.format_line(event, width), highlight=False, soft_wrap=True)
+
+    for event in reversed(events):
+        emit(event)
+    if not events and not json:
+        typer.echo("No events." + (" Waiting for new ones..." if follow else ""), err=True)
+    if not follow:
+        return
+
+    seen = {e["id"] for e in events}
+    started = datetime.now(timezone.utc)
+    cursor = max((ev.parse_time(e["occurred_at"]) for e in events), default=since_dt or started)
+    # Never print events older than what the first listing covered: the
+    # --since window, or the oldest event shown (older ones were cut by
+    # --limit), or — with nothing shown — the follow start minus the overlap.
+    if since_dt:
+        floor = since_dt
+    elif events:
+        floor = min(ev.parse_time(e["occurred_at"]) for e in events)
+    else:
+        floor = started - _EVENTS_FOLLOW_OVERLAP
+    try:
+        while True:
+            time.sleep(_EVENTS_POLL_INTERVAL)
+            batch = _fetch_events(
+                client,
+                app_id,
+                event_type=event_type,
+                resource_id=resource_id,
+                since=cursor - _EVENTS_FOLLOW_OVERLAP,
+                limit=_EVENTS_MAX_LIMIT,
+            )
+            for event in reversed(batch):
+                if event["id"] in seen or ev.parse_time(event["occurred_at"]) < floor:
+                    continue
+                seen.add(event["id"])
+                emit(event)
+                cursor = max(cursor, ev.parse_time(event["occurred_at"]))
+    except KeyboardInterrupt:
+        pass
