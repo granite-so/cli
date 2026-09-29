@@ -308,7 +308,21 @@ novps apps export <app_name> --include-secrets   # Include env values (needs app
 novps apps deploy <app_id>                       # Trigger a manual deployment
 novps apps update <app_id> --name "New name" [--description "..."]
 novps apps delete <app_id> [--force]             # Soft delete; prompts to type DELETE
+
+novps apps events <app_id>                       # Health & deployment events, oldest first
+novps apps events <app_id> -f                    # Follow: print new events as they happen
+novps apps events <app_id> --since 6h -r api     # One resource (name or ID), last 6 hours
+novps apps events <app_id> -t resource.oom_killed -n 100
+novps apps events <app_id> -f --json             # One JSON object per line (for scripts)
 ```
+
+`apps events` shows what happened to the app's resources — healthchecks failing and recovering, restarts,
+out-of-memory kills, crash loops, image pull and configuration errors, cron runs, deployments — the same
+events platform webhooks deliver (kept for 30 days). `(ongoing)` marks a problem that is still open.
+Types: `resource.healthcheck.failing|recovered`, `resource.down|degraded|up`, `resource.restarted`,
+`resource.oom_killed`, `resource.crash_loop[.recovered]`, `resource.image_pull_failed[.recovered]`,
+`resource.config_error[.recovered]`, `cronjob.run.failed|succeeded|long_running`,
+`deployment.started|succeeded|failed|canceled`, `build.failed`.
 
 ### Resources
 
