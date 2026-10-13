@@ -11,7 +11,7 @@ import yaml
 
 from novps import events as ev
 from novps.client import get_client
-from novps.commands.resources import _parse_since
+from novps.commands.resources import _parse_env_pair, _parse_since
 from novps.manifest import ManifestError, load_manifest, resource_names
 from novps.output import console, output, print_json
 
@@ -111,6 +111,61 @@ def delete_app(
     client = get_client(project)
     client.delete(f"/apps/{app_id}")
     typer.echo(f"Application {app_id} deleted.")
+
+
+def _load_app_envs(client, app_id: str) -> list[dict]:
+    resp = client.get(f"/apps/{app_id}/secrets", params={"include_values": "true"})
+    return [{"key": e.get("key"), "value": e.get("value", "")} for e in (resp.get("data") or {}).get("global") or []]
+
+
+def _store_app_envs(client, app_id: str, envs: list[dict], *, no_deploy: bool) -> None:
+    payload: dict = {"envs_global": envs}
+    if no_deploy:
+        payload["do_not_deploy"] = True
+    client.patch(f"/apps/{app_id}", data=payload)
+
+
+@app.command("set-env")
+def set_app_env(
+    app_id: str = typer.Argument(help="Application ID."),
+    pairs: list[str] = typer.Argument(..., help="KEY=VALUE pairs (repeatable)."),
+    merge: bool = typer.Option(True, "--merge/--replace", help="Merge with existing envs or replace."),
+    no_deploy: bool = typer.Option(False, "--no-deploy", help="Do not trigger a deployment."),
+    project: str = typer.Option("default", "--project", "-p", help="Project alias."),
+) -> None:
+    """Set application-wide environment variables, shared by all its resources.
+
+    Merging reads the current values, which needs the apps.show-secrets permission.
+    """
+    new_pairs = [_parse_env_pair(p) for p in pairs]
+    client = get_client(project)
+    envs: list[dict] = []
+    if merge:
+        new_keys = {k for k, _ in new_pairs}
+        envs = [e for e in _load_app_envs(client, app_id) if e["key"] not in new_keys]
+    for k, v in new_pairs:
+        envs.append({"key": k, "value": v})
+    _store_app_envs(client, app_id, envs, no_deploy=no_deploy)
+    typer.echo(f"Application {app_id}: envs updated ({len(new_pairs)} changed).")
+
+
+@app.command("unset-env")
+def unset_app_env(
+    app_id: str = typer.Argument(help="Application ID."),
+    keys: list[str] = typer.Argument(..., help="Keys to remove."),
+    no_deploy: bool = typer.Option(False, "--no-deploy", help="Do not trigger a deployment."),
+    project: str = typer.Option("default", "--project", "-p", help="Project alias."),
+) -> None:
+    """Remove application-wide environment variables."""
+    client = get_client(project)
+    current = _load_app_envs(client, app_id)
+    envs = [e for e in current if e["key"] not in keys]
+    removed = len(current) - len(envs)
+    if not removed:
+        typer.echo(f"Application {app_id}: none of these keys are set.", err=True)
+        raise typer.Exit(code=1)
+    _store_app_envs(client, app_id, envs, no_deploy=no_deploy)
+    typer.echo(f"Application {app_id}: envs updated ({removed} removed).")
 
 
 @app.command("deploy")
