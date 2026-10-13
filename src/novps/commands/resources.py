@@ -696,12 +696,19 @@ def set_env(
     merge: bool = typer.Option(True, "--merge/--replace", help="Merge with existing envs or replace."),
     project: str = typer.Option("default", "--project", "-p", help="Project alias."),
 ) -> None:
-    """Set resource environment variables."""
+    """Set resource environment variables.
+
+    Merging reads the current values, which needs the apps.show-secrets permission.
+    """
     new_pairs = [_parse_env_pair(p) for p in pairs]
     client = get_client(project)
     envs: list[dict] = []
     if merge:
-        resp = client.get(f"/resources/{resource_id}/environment-variables")
+        app_id = client.get(f"/resources/{resource_id}").get("data", {}).get("application_id")
+        if not app_id:
+            typer.echo("Error: the API did not return the resource's application; use --replace.", err=True)
+            raise typer.Exit(code=1)
+        resp = client.get(f"/apps/{app_id}/resources/{resource_id}/secrets", params={"include_values": "true"})
         for e in resp.get("data", []) or []:
             envs.append({"key": e.get("key"), "value": e.get("value", "")})
         new_keys = {k for k, _ in new_pairs}
