@@ -307,6 +307,9 @@ novps apps export <app_name> [-o novps.yaml]     # Export as an apply-compatible
 novps apps export <app_name> --include-secrets   # Include env values (needs apps.show-secrets)
 novps apps deploy <app_id>                       # Trigger a manual deployment
 novps apps update <app_id> --name "New name" [--description "..."]
+novps apps set-env <app_id> KEY=VALUE OTHER=value    # App-wide envs, merged with existing
+novps apps set-env <app_id> KEY=VALUE --replace      # Replace all app-wide env vars
+novps apps unset-env <app_id> KEY OTHER              # Remove app-wide env vars
 novps apps delete <app_id> [--force]             # Soft delete; prompts to type DELETE
 
 novps apps events <app_id>                       # Health & deployment events, oldest first
