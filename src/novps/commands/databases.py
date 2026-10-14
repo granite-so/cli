@@ -421,7 +421,7 @@ def create_database(
     engine: str = typer.Option(..., "--engine", "-e", help="Database engine: postgres, mysql, or redis."),
     size: str = typer.Option(..., "--size", "-s", help="Node size: xs, sm, md, lg, xl."),
     count: int = typer.Option(1, "--count", "-n", help="Node count (1-3)."),
-    postgres_version: str = typer.Option("16", "--postgres-version", help="Postgres version: 14, 15, 16."),
+    postgres_version: str = typer.Option("17", "--postgres-version", help="Postgres version: 15, 16, 17, 18."),
     mysql_version: str = typer.Option("8.0", "--mysql-version", help="MySQL version: 8.0."),
     wait: bool = typer.Option(False, "--wait", "-w", help="Wait until the database becomes ready."),
     json: bool = typer.Option(False, "--json", help="Output as JSON."),
