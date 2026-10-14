@@ -378,7 +378,7 @@ novps databases get <id> --format env --show-password # Print as DB_HOST=, DATAB
 novps databases get <id> --format json
 
 novps databases create --engine postgres --size sm    # engine: postgres|mysql|redis, size: xs..xl
-novps databases create --engine postgres --size sm --postgres-version 16 --count 1
+novps databases create --engine postgres --size sm --postgres-version 17 --count 1
 novps databases create --engine mysql --size sm --mysql-version 8.0
 novps databases create --engine postgres --size sm --wait   # Wait (with spinner) until ready
 
