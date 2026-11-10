@@ -366,6 +366,22 @@ novps secrets list <app_id>                    # List secret keys (values masked
 novps secrets list <app_id> --with-values      # Include secret values
 novps secrets list <app_id> -r <resource_id>   # Resource-level secrets
 novps secrets get <app_id> DATABASE_URL        # Get a single secret value
+novps secrets set <app_id> KEY=value           # Set app-wide variables (redeploys; --no-deploy to skip)
+novps secrets unset <app_id> KEY               # Remove app-wide variables
+```
+
+The same commands work for **custom secrets** — variables that belong to no app, kept in Granite for your scripts
+and CI. Pass the secret's name instead of an app ID (names never look like a UUID):
+
+```bash
+novps secrets list                             # All custom secrets of the project (names and keys)
+novps secrets set stripe-prod API_KEY=sk_live_... WEBHOOK_SECRET=whsec_...   # Creates the secret if it does not exist
+novps secrets get stripe-prod                  # All values as a table
+novps secrets get stripe-prod --format env > .env          # KEY=VALUE lines (also: json, export)
+eval "$(novps secrets get stripe-prod --format export)"    # Export into the current shell
+novps secrets get stripe-prod API_KEY --format value       # Just the value, for scripts
+novps secrets unset stripe-prod WEBHOOK_SECRET
+novps secrets delete stripe-prod
 ```
 
 ### Databases
